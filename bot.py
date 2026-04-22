@@ -13,7 +13,7 @@ ADMIN_CHAT_ID = 8402128598
 
 waiting_users = set()
 
-FORM_TEXT = """아래 양식 작성 후 보내주세요.
+FORM_TEXT = """아래 양식 복사 후 작성해주세요.
 
 ✔️ 성함 :
 ✔️ 생년월일 :
