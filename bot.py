@@ -12,6 +12,7 @@ BOT_TOKEN = "8507319540:AAEvjdcDatnUl-lpA1hC_nMCJvjcwOrzUAA"
 ADMIN_CHAT_ID = 8402128598
 
 waiting_users = set()
+blocked_users = set()
 
 FORM_TEXT = """아래 양식 복사 후 작성해주세요.
 
@@ -27,6 +28,12 @@ FORM_TEXT = """아래 양식 복사 후 작성해주세요.
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if user.id in blocked_users:
+        await update.message.reply_text("상담이 제한된 계정입니다.")
+        return
+
     keyboard = [
         [InlineKeyboardButton("문의하기", callback_data="contact")]
     ]
@@ -42,6 +49,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    if query.from_user.id in blocked_users:
+        await query.message.reply_text("상담이 제한된 계정입니다.")
+        return
+
     if query.data == "contact":
         waiting_users.add(query.from_user.id)
         await query.message.reply_text(FORM_TEXT)
@@ -50,6 +61,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text
+
+    if user.id in blocked_users:
+        await update.message.reply_text("상담이 제한된 계정입니다.")
+        return
 
     if user.id in waiting_users:
         username = f"@{user.username}" if user.username else "없음"
@@ -69,10 +84,49 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         waiting_users.remove(user.id)
 
 
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        user_id = int(context.args[0])
+        blocked_users.add(user_id)
+        await update.message.reply_text(f"{user_id} 차단 완료")
+    except:
+        await update.message.reply_text("사용법: /ban 유저ID")
+
+
+async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        user_id = int(context.args[0])
+        blocked_users.discard(user_id)
+        await update.message.reply_text(f"{user_id} 차단 해제 완료")
+    except:
+        await update.message.reply_text("사용법: /unban 유저ID")
+
+
+async def banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+
+    if not blocked_users:
+        await update.message.reply_text("차단 목록 없음")
+    else:
+        text = "\n".join(str(uid) for uid in blocked_users)
+        await update.message.reply_text(f"차단 목록:\n{text}")
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ban", ban_user))
+    app.add_handler(CommandHandler("unban", unban_user))
+    app.add_handler(CommandHandler("banlist", banlist))
+
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
