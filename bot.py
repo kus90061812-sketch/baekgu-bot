@@ -2,7 +2,7 @@ import random
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = "8999195481:AAH9bv-jqgrQ0KgDPwHsbhPLGTHSpsAxBE4"
+TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
 
 ADMIN_ID = 7936160142  # 관리자 텔레그램 ID
 
