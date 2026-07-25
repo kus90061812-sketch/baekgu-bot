@@ -1,9 +1,10 @@
+import os
 import random
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 
-TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
+TOKEN = os.environ.get("8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk")
 
 ADMIN_ID = 7936160142
 
@@ -30,23 +31,15 @@ def random_reward():
 
 
 
-# 시작
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
+async def 시작(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        """
-🎰 뽑기봇 정상 작동중!
-
-/help 를 입력하면
-사용 가능한 명령어를 확인할 수 있습니다.
-"""
+        "🎰 뽑기봇 정상 작동중!\n\n"
+        "/도움말 을 입력하면 명령어를 확인할 수 있습니다."
     )
 
 
 
-# 도움말
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
+async def 도움말(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         """
 🎰 뽑기봇 명령어 안내
@@ -54,44 +47,37 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 관리자 명령어
 
-/give 사용자ID 수량
-
-➡️ 해당 유저에게 뽑기권 지급
+/지급 사용자ID 수량
+➡️ 뽑기권 지급
 
 
 🎫 사용자 명령어
 
-/draw
-
-➡️ 보유한 뽑기권으로 랜덤 뽑기
+/뽑기
+➡️ 랜덤 뽑기 실행
 
 
 ℹ️ 안내
 
-/start
+/시작
 ➡️ 봇 작동 확인
 
-/help
+/도움말
 ➡️ 명령어 확인
-
-
-🎉 즐거운 뽑기 되세요!
 """
     )
 
 
 
-# 뽑기권 지급
-async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def 지급(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
         return
 
 
     if len(context.args) != 2:
-
         await update.message.reply_text(
-            "사용법 : /give 사용자ID 수량"
+            "사용법 : /지급 사용자ID 수량"
         )
         return
 
@@ -109,15 +95,13 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# 뽑기
-async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def 뽑기(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
     name = update.effective_user.first_name
 
 
     if tickets.get(user_id, 0) <= 0:
-
         await update.message.reply_text(
             "🎫 보유한 뽑기권이 없습니다."
         )
@@ -134,9 +118,9 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"""
 🎉 뽑기 결과 🎉
 
-👤 당첨자 : {name}
+👤 {name}
 
-🏆 결과 : {reward}
+🏆 당첨 : {reward}
 
 🎫 남은 뽑기권 : {tickets[user_id]}장
 """
@@ -147,12 +131,12 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TOKEN).build()
 
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("give", give))
-app.add_handler(CommandHandler("draw", draw))
+app.add_handler(CommandHandler("시작", 시작))
+app.add_handler(CommandHandler("도움말", 도움말))
+app.add_handler(CommandHandler("지급", 지급))
+app.add_handler(CommandHandler("뽑기", 뽑기))
 
 
-print("봇 실행중")
+print("Bot is running")
 
 app.run_polling()
