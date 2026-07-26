@@ -3,8 +3,7 @@ import random
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-
-TOKEN = os.environ.get("8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk")
+TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
 
 ADMIN_ID = 7936160142
 
