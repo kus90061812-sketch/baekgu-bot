@@ -153,12 +153,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await give(update, context)
 
 
-
-if not TOKEN:
-    print("TOKEN 없음")
-    exit()
-
-
 app = ApplicationBuilder().token(TOKEN).build()
 
 
