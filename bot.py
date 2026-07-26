@@ -12,22 +12,22 @@ from telegram.ext import (
 
 
 # =====================
-# 봇 토큰 입력
+# 봇 토큰
 # =====================
 
-TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
+TOKEN = "여기에_봇파더_토큰_입력"
 
 
-# 관리자 텔레그램 ID
+# 관리자 ID
 ADMIN_ID = 7936160142
 
 
 # =====================
-# SQLite DB
+# SQLite 설정
 # =====================
 
 db = sqlite3.connect(
-    "/app/data/bot.db",
+    "bot.db",
     check_same_thread=False
 )
 
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
 db.commit()
 
 
-# 연속 뽑기 방지
+# 연속 클릭 방지
 draw_lock = asyncio.Lock()
 
 
@@ -58,18 +58,19 @@ rewards = [
     ("3,000포인트", 30),
     ("5,000포인트", 15),
     ("10,000포인트", 4),
-    ("50,000포인트", 1),
+    ("50,000포인트", 1)
 ]
+
 
 
 def random_reward():
 
-    items = []
+    result = []
 
     for reward, weight in rewards:
-        items.extend([reward] * weight)
+        result.extend([reward] * weight)
 
-    return random.choice(items)
+    return random.choice(result)
 
 
 
@@ -83,7 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
 🎰 포인트 뽑기봇
 
-정상 작동중입니다!
+정상 작동중입니다.
 
 /도움말 입력
 """
@@ -127,7 +128,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================
-# 지급
+# 관리자 지급
 # =====================
 
 async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,6 +145,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "사용법 : /지급 사용자ID 수량"
         )
+
         return
 
 
@@ -157,7 +159,6 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         VALUES (?, ?)
 
         ON CONFLICT(user_id)
-
         DO UPDATE SET tickets = tickets + ?
         """,
         (user_id, amount, amount)
@@ -200,6 +201,7 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "🎫 보유한 뽑기권이 없습니다."
             )
+
             return
 
 
@@ -226,4 +228,74 @@ async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ━━━━━━━━━━━━━━
 
-🏆 당첨
+🏆 당첨 상품
+
+✨ {reward} ✨
+
+━━━━━━━━━━━━━━
+
+🎫 남은 뽑기권 : {count - 1}장
+
+💰 최대 당첨금
+
+👑 50,000포인트
+
+🍀 다음 행운의 주인공은?
+"""
+        )
+
+
+
+# =====================
+# 한글 명령어 처리
+# =====================
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
+
+    text = update.message.text
+
+
+    if text == "/시작":
+
+        await start(update, context)
+
+
+    elif text == "/도움말":
+
+        await help_command(update, context)
+
+
+    elif text == "/뽑기":
+
+        await draw(update, context)
+
+
+    elif text.startswith("/지급"):
+
+        await give(update, context)
+
+
+
+# =====================
+# 실행
+# =====================
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+
+app.add_handler(
+    MessageHandler(
+        filters.TEXT,
+        message_handler
+    )
+)
+
+
+print("Bot is running")
+
+
+app.run_polling()
