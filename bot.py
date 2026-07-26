@@ -1,5 +1,7 @@
-import os
 import random
+import sqlite3
+import asyncio
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -8,13 +10,48 @@ from telegram.ext import (
     filters
 )
 
+
+# =====================
+# 봇 토큰 입력
+# =====================
+
 TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
 
+
+# 관리자 텔레그램 ID
 ADMIN_ID = 7936160142
 
 
-tickets = {}
+# =====================
+# SQLite DB
+# =====================
 
+db = sqlite3.connect(
+    "bot.db",
+    check_same_thread=False
+)
+
+cursor = db.cursor()
+
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    tickets INTEGER DEFAULT 0
+)
+""")
+
+db.commit()
+
+
+# 연속 뽑기 방지
+draw_lock = asyncio.Lock()
+
+
+
+# =====================
+# 당첨 목록
+# =====================
 
 rewards = [
     ("1,000포인트", 50),
@@ -26,6 +63,7 @@ rewards = [
 
 
 def random_reward():
+
     items = []
 
     for reward, weight in rewards:
@@ -35,43 +73,62 @@ def random_reward():
 
 
 
+# =====================
+# 시작
+# =====================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         """
-🎰 뽑기봇 정상 작동중!
+🎰 포인트 뽑기봇
 
-사용 가능한 명령어
+정상 작동중입니다!
 
-/도움말
-/뽑기
+/도움말 입력
 """
     )
 
 
 
+# =====================
+# 도움말
+# =====================
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         """
-🎰 뽑기봇 명령어
+🎰 뽑기 이벤트 안내
 
-🎫 사용자
+
+🎫 사용자 명령어
 
 /뽑기
 ➡️ 랜덤 뽑기
 
 
-👑 관리자
+👑 관리자 명령어
 
 /지급 사용자ID 수량
 ➡️ 뽑기권 지급
 
 
-/시작
-➡️ 봇 작동 확인
+🏆 당첨 목록
+
+🥉 1,000포인트
+🥈 3,000포인트
+🥇 5,000포인트
+💎 10,000포인트
+👑 최대 당첨금 : 50,000포인트
 """
     )
 
 
+
+# =====================
+# 지급
+# =====================
 
 async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -83,6 +140,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if len(args) != 3:
+
         await update.message.reply_text(
             "사용법 : /지급 사용자ID 수량"
         )
@@ -93,7 +151,19 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = int(args[2])
 
 
-    tickets[user_id] = tickets.get(user_id, 0) + amount
+    cursor.execute(
+        """
+        INSERT INTO users(user_id, tickets)
+        VALUES (?, ?)
+
+        ON CONFLICT(user_id)
+
+        DO UPDATE SET tickets = tickets + ?
+        """,
+        (user_id, amount, amount)
+    )
+
+    db.commit()
 
 
     await update.message.reply_text(
@@ -102,75 +172,58 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+# =====================
+# 뽑기
+# =====================
+
 async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user_id = update.effective_user.id
-    name = update.effective_user.first_name
+    async with draw_lock:
+
+        user_id = update.effective_user.id
+        name = update.effective_user.first_name
 
 
-    if tickets.get(user_id, 0) <= 0:
+        cursor.execute(
+            "SELECT tickets FROM users WHERE user_id=?",
+            (user_id,)
+        )
+
+        data = cursor.fetchone()
+
+
+        count = data[0] if data else 0
+
+
+        if count <= 0:
+
+            await update.message.reply_text(
+                "🎫 보유한 뽑기권이 없습니다."
+            )
+            return
+
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET tickets = tickets - 1
+            WHERE user_id=?
+            """,
+            (user_id,)
+        )
+
+        db.commit()
+
+
+        reward = random_reward()
+
 
         await update.message.reply_text(
-            "🎫 보유한 뽑기권이 없습니다."
-        )
-        return
-
-
-    tickets[user_id] -= 1
-
-    reward = random_reward()
-
-
-    await update.message.reply_text(
-        f"""
+            f"""
 🎉 뽑기 결과 🎉
 
-👤 {name}
+👤 참여자 : {name}
 
-🏆 당첨 : {reward}
+━━━━━━━━━━━━━━
 
-🎫 남은 뽑기권 : {tickets[user_id]}장
-"""
-    )
-
-
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    text = update.message.text
-
-
-    if text == "/시작":
-        await start(update, context)
-
-    elif text == "/도움말":
-        await help_command(update, context)
-
-    elif text == "/뽑기":
-        await draw(update, context)
-
-    elif text.startswith("/지급"):
-        await give(update, context)
-
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-
-app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        message_handler
-    )
-)
-
-app.add_handler(
-    MessageHandler(
-        filters.Regex(r"^/(시작|도움말|뽑기|지급).*"),
-        message_handler
-    )
-)
-
-
-print("Bot is running")
-
-app.run_polling()
+🏆 당첨
