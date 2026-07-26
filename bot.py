@@ -15,7 +15,7 @@ from telegram.ext import (
 # 봇 토큰
 # =====================
 
-TOKEN = "여기에_봇파더_토큰_입력"
+TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
 
 
 # 관리자 ID
