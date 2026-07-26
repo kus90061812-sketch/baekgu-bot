@@ -27,7 +27,7 @@ ADMIN_ID = 7936160142
 # =====================
 
 db = sqlite3.connect(
-    "bot.db",
+    "/app/data/bot.db",
     check_same_thread=False
 )
 
