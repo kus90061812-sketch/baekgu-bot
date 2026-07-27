@@ -1,416 +1,664 @@
 import asyncio
+import logging
 import random
 import sqlite3
+from contextlib import closing
+from pathlib import Path
+from typing import Optional
 
 from telegram import Update
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-
-# =====================
-# 기본 설정
-# =====================
-
-# Railway Variables에 TOKEN을 등록하면 자동으로 불러옵니다.
-# 환경변수를 쓰지 않을 경우 아래 기본값을 실제 토큰으로 바꿔도 됩니다.
+# =========================================================
+# 반드시 아래 두 값만 수정하세요.
+# =========================================================
 TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
-
-# 관리자 텔레그램 숫자 ID
 ADMIN_ID = 7936160142
 
+# Railway Volume을 /data 경로에 연결했다면 그대로 사용됩니다.
+# /data 폴더가 없는 환경에서는 현재 폴더에 bot.db가 생성됩니다.
+DATA_DIR = Path("/data") if Path("/data").exists() else Path(".")
+DB_PATH = DATA_DIR / "bot.db"
 
-# =====================
-# SQLite 설정
-# =====================
-
-db = sqlite3.connect(
-    "bot.db",
-    check_same_thread=False,
-)
-
-cursor = db.cursor()
-
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        tickets INTEGER DEFAULT 0
-    )
-    """
-)
-
-# 기존 bot.db에 username 컬럼이 없을 때 자동 추가
-cursor.execute("PRAGMA table_info(users)")
-columns = {row[1] for row in cursor.fetchall()}
-
-if "username" not in columns:
-    cursor.execute("ALTER TABLE users ADD COLUMN username TEXT")
-
-db.commit()
-
-
-# 동시에 여러 번 뽑는 문제 방지
-draw_lock = asyncio.Lock()
-
-
-# =====================
-# 당첨 확률
-# 합계 100
-# =====================
-
-rewards = [
-    ("3,000포인트", 50),
-    ("5,000포인트", 28),
-    ("10,000포인트", 15),
-    ("30,000포인트", 5),
-    ("50,000포인트", 2),
+# 당첨 항목과 가중치
+REWARDS = [
+    (3_000, 50),
+    (5_000, 28),
+    (10_000, 15),
+    (30_000, 5),
+    (50_000, 2),
 ]
 
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger("telegram-draw-bot")
 
-def random_reward() -> str:
-    items = [reward for reward, _ in rewards]
-    weights = [weight for _, weight in rewards]
-
-    return random.choices(
-        items,
-        weights=weights,
-        k=1,
-    )[0]
+db_lock = asyncio.Lock()
 
 
-# =====================
-# 사용자 정보 저장
-# =====================
-
-def save_user(user) -> None:
-    if user is None:
-        return
-
-    cursor.execute(
-        """
-        INSERT INTO users (user_id, username, tickets)
-        VALUES (?, ?, 0)
-        ON CONFLICT(user_id)
-        DO UPDATE SET username = excluded.username
-        """,
-        (user.id, user.username),
-    )
-
-    db.commit()
+# =========================================================
+# 데이터베이스
+# =========================================================
+def connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-# =====================
-# 시작
-# =====================
+def initialize_database() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    save_user(update.effective_user)
-
-    await update.message.reply_text(
-        """🎰 포인트 뽑기봇
-
-정상 작동 중입니다.
-
-/도움말 입력"""
-    )
-
-
-# =====================
-# 도움말
-# =====================
-
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    save_user(update.effective_user)
-
-    await update.message.reply_text(
-        """🎰 뽑기 이벤트 안내
-
-🎫 사용자 명령어
-
-/뽑기
-➡️ 랜덤 뽑기
-
-/내뽑기권
-➡️ 보유 뽑기권 확인
-
-👑 관리자 명령어
-
-/지급 사용자ID 수량
-/지급 @사용자명 수량
-➡️ 뽑기권 지급
-
-🏆 당첨 목록
-
-🥉 3,000포인트
-🥈 5,000포인트
-🥇 10,000포인트
-💎 30,000포인트
-👑 50,000포인트"""
-    )
-
-
-# =====================
-# 관리자 지급
-# =====================
-
-async def give(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(
-            "❌ 관리자만 사용할 수 있습니다."
+    with closing(connect_db()) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                display_name TEXT NOT NULL,
+                tickets INTEGER NOT NULL DEFAULT 0 CHECK(tickets >= 0),
+                total_draws INTEGER NOT NULL DEFAULT 0,
+                total_points INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        return
 
-    args = update.message.text.split()
-
-    if len(args) != 3:
-        await update.message.reply_text(
-            """사용법
-
-/지급 사용자ID 수량
-
-또는
-
-/지급 @사용자명 수량"""
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_users_username
+            ON users(username COLLATE NOCASE)
+            """
         )
-        return
 
-    target = args[1].strip()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS draw_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                reward INTEGER NOT NULL,
+                remaining_tickets INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticket_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                target_user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                reason TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        conn.commit()
+
+
+def normalize_username(username: Optional[str]) -> Optional[str]:
+    if not username:
+        return None
+    return username.lstrip("@").strip().lower() or None
+
+
+def save_or_update_user(
+    user_id: int,
+    username: Optional[str],
+    display_name: str,
+) -> None:
+    normalized = normalize_username(username)
+
+    with closing(connect_db()) as conn:
+        conn.execute(
+            """
+            INSERT INTO users(user_id, username, display_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                display_name = excluded.display_name,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, normalized, display_name),
+        )
+        conn.commit()
+
+
+def get_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            "SELECT * FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+
+def get_user_by_username(username: str) -> Optional[sqlite3.Row]:
+    normalized = normalize_username(username)
+    if not normalized:
+        return None
+
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE username = ? COLLATE NOCASE
+            """,
+            (normalized,),
+        ).fetchone()
+
+
+def add_tickets(
+    admin_id: int,
+    target_user_id: int,
+    amount: int,
+    reason: str,
+) -> int:
+    with closing(connect_db()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        row = conn.execute(
+            "SELECT tickets FROM users WHERE user_id = ?",
+            (target_user_id,),
+        ).fetchone()
+
+        if row is None:
+            conn.rollback()
+            raise ValueError("등록되지 않은 사용자입니다.")
+
+        new_balance = row["tickets"] + amount
+        if new_balance < 0:
+            conn.rollback()
+            raise ValueError("보유 뽑기권보다 많이 차감할 수 없습니다.")
+
+        conn.execute(
+            """
+            UPDATE users
+            SET tickets = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (new_balance, target_user_id),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO ticket_logs(admin_id, target_user_id, amount, reason)
+            VALUES (?, ?, ?, ?)
+            """,
+            (admin_id, target_user_id, amount, reason),
+        )
+
+        conn.commit()
+        return new_balance
+
+
+def perform_draw(user_id: int) -> tuple[int, int]:
+    reward_values = [reward for reward, _ in REWARDS]
+    reward_weights = [weight for _, weight in REWARDS]
+    reward = random.choices(reward_values, weights=reward_weights, k=1)[0]
+
+    with closing(connect_db()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
+        row = conn.execute(
+            """
+            SELECT tickets, username
+            FROM users
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if row is None or row["tickets"] <= 0:
+            conn.rollback()
+            raise ValueError("뽑기권이 없습니다.")
+
+        remaining = row["tickets"] - 1
+
+        conn.execute(
+            """
+            UPDATE users
+            SET tickets = ?,
+                total_draws = total_draws + 1,
+                total_points = total_points + ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+            """,
+            (remaining, reward, user_id),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO draw_logs(user_id, username, reward, remaining_tickets)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, row["username"], reward, remaining),
+        )
+
+        conn.commit()
+        return reward, remaining
+
+
+def get_global_stats() -> sqlite3.Row:
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            """
+            SELECT
+                COUNT(*) AS user_count,
+                COALESCE(SUM(tickets), 0) AS ticket_count,
+                COALESCE(SUM(total_draws), 0) AS draw_count,
+                COALESCE(SUM(total_points), 0) AS point_count
+            FROM users
+            """
+        ).fetchone()
+
+
+def get_recent_draws(limit: int = 10) -> list[sqlite3.Row]:
+    with closing(connect_db()) as conn:
+        return conn.execute(
+            """
+            SELECT user_id, username, reward, remaining_tickets, created_at
+            FROM draw_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+# =========================================================
+# 메시지
+# =========================================================
+def user_label(row: sqlite3.Row) -> str:
+    if row["username"]:
+        return f"@{row['username']}"
+    return row["display_name"]
+
+
+def help_message(is_admin: bool) -> str:
+    lines = [
+        "🎰 포인트 뽑기 봇",
+        "",
+        "사용자 명령어",
+        "• /시작",
+        "• /도움말",
+        "• /내뽑기권",
+        "• /뽑기",
+        "",
+        "당첨 목록",
+        "• 3,000포인트",
+        "• 5,000포인트",
+        "• 10,000포인트",
+        "• 30,000포인트",
+        "• 50,000포인트",
+    ]
+
+    if is_admin:
+        lines.extend(
+            [
+                "",
+                "관리자 명령어",
+                "• /지급 사용자ID 수량",
+                "• /지급 @username 수량",
+                "• /차감 사용자ID 수량",
+                "• /차감 @username 수량",
+                "• /조회 사용자ID",
+                "• /조회 @username",
+                "• /전체통계",
+                "• /최근당첨",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def resolve_target(target_text: str) -> Optional[sqlite3.Row]:
+    if target_text.startswith("@"):
+        return get_user_by_username(target_text)
 
     try:
-        amount = int(args[2])
+        user_id = int(target_text)
     except ValueError:
-        await update.message.reply_text(
-            "❌ 수량은 숫자로 입력하세요."
+        return None
+
+    return get_user_by_id(user_id)
+
+
+async def send_reply(update: Update, text: str) -> None:
+    if update.effective_message:
+        await update.effective_message.reply_text(text)
+
+
+# =========================================================
+# 명령 처리
+# =========================================================
+async def handle_start(update: Update) -> None:
+    await send_reply(
+        update,
+        "✅ 포인트 뽑기 봇이 정상 작동 중입니다.\n"
+        "/도움말 명령어로 사용법을 확인하세요.",
+    )
+
+
+async def handle_my_tickets(update: Update) -> None:
+    user = update.effective_user
+    row = get_user_by_id(user.id)
+
+    tickets = row["tickets"] if row else 0
+    draws = row["total_draws"] if row else 0
+    points = row["total_points"] if row else 0
+
+    await send_reply(
+        update,
+        "🎫 내 뽑기권\n\n"
+        f"보유 뽑기권: {tickets:,}장\n"
+        f"누적 뽑기: {draws:,}회\n"
+        f"누적 당첨: {points:,}포인트",
+    )
+
+
+async def handle_draw(update: Update) -> None:
+    user = update.effective_user
+
+    async with db_lock:
+        try:
+            reward, remaining = perform_draw(user.id)
+        except ValueError:
+            await send_reply(
+                update,
+                "❌ 보유한 뽑기권이 없습니다.\n"
+                "관리자에게 뽑기권 지급을 요청하세요.",
+            )
+            return
+
+    await send_reply(
+        update,
+        "🎉 뽑기 결과\n\n"
+        f"💰 {reward:,}포인트 당첨!\n"
+        f"🎫 남은 뽑기권: {remaining:,}장",
+    )
+
+
+async def handle_ticket_change(
+    update: Update,
+    parts: list[str],
+    is_add: bool,
+) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        await send_reply(update, "❌ 관리자만 사용할 수 있는 명령어입니다.")
+        return
+
+    command_name = "지급" if is_add else "차감"
+
+    if len(parts) != 3:
+        await send_reply(
+            update,
+            f"사용법: /{command_name} 사용자ID 수량\n"
+            f"또는 /{command_name} @username 수량",
         )
+        return
+
+    target = resolve_target(parts[1])
+    if target is None:
+        await send_reply(
+            update,
+            "❌ 사용자를 찾을 수 없습니다.\n"
+            "@username 지급은 해당 사용자가 먼저 봇에 메시지를 보낸 뒤 사용할 수 있습니다.",
+        )
+        return
+
+    try:
+        amount = int(parts[2].replace(",", ""))
+    except ValueError:
+        await send_reply(update, "❌ 수량은 숫자로 입력하세요.")
         return
 
     if amount <= 0:
-        await update.message.reply_text(
-            "❌ 지급 수량은 1장 이상이어야 합니다."
-        )
+        await send_reply(update, "❌ 수량은 1 이상이어야 합니다.")
         return
 
-    # 운영 정책상 인당 하루 최대 5장이라면
-    # 관리자가 한 번에 5장을 넘겨 지급하지 못하게 제한
-    if amount > 5:
-        await update.message.reply_text(
-            "❌ 한 번에 최대 5장까지만 지급할 수 있습니다."
-        )
-        return
+    signed_amount = amount if is_add else -amount
 
-    display_target = target
-
-    # @사용자명으로 지급
-    if target.startswith("@"):
-        username = target[1:].strip()
-
-        if not username:
-            await update.message.reply_text(
-                "❌ 사용자명을 정확히 입력하세요."
-            )
-            return
-
-        cursor.execute(
-            """
-            SELECT user_id
-            FROM users
-            WHERE LOWER(username) = LOWER(?)
-            """,
-            (username,),
-        )
-
-        row = cursor.fetchone()
-
-        if row is None:
-            await update.message.reply_text(
-                """❌ 해당 사용자명을 찾을 수 없습니다.
-
-사용자가 먼저 봇방이나 그룹에서
-/시작 또는 /도움말을 한 번 입력해야 합니다."""
-            )
-            return
-
-        user_id = row[0]
-
-    # 숫자 ID로 지급
-    else:
+    async with db_lock:
         try:
-            user_id = int(target)
-        except ValueError:
-            await update.message.reply_text(
-                "❌ 사용자 ID 또는 @사용자명을 정확히 입력하세요."
+            new_balance = add_tickets(
+                admin_id=update.effective_user.id,
+                target_user_id=target["user_id"],
+                amount=signed_amount,
+                reason=command_name,
             )
+        except ValueError as exc:
+            await send_reply(update, f"❌ {exc}")
             return
 
-    cursor.execute(
-        """
-        INSERT INTO users (user_id, tickets)
-        VALUES (?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET tickets = tickets + excluded.tickets
-        """,
-        (user_id, amount),
-    )
-
-    db.commit()
-
-    await update.message.reply_text(
-        f"""✅ 지급 완료
-
-👤 대상 : {display_target}
-🎫 지급 수량 : {amount}장"""
+    await send_reply(
+        update,
+        f"✅ 뽑기권 {command_name} 완료\n\n"
+        f"대상: {user_label(target)}\n"
+        f"{command_name} 수량: {amount:,}장\n"
+        f"현재 보유량: {new_balance:,}장",
     )
 
 
-# =====================
-# 내 뽑기권
-# =====================
+async def handle_lookup(update: Update, parts: list[str]) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        await send_reply(update, "❌ 관리자만 사용할 수 있는 명령어입니다.")
+        return
 
-async def my_ticket(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    save_user(update.effective_user)
+    if len(parts) != 2:
+        await send_reply(
+            update,
+            "사용법: /조회 사용자ID\n또는 /조회 @username",
+        )
+        return
 
-    user_id = update.effective_user.id
+    target = resolve_target(parts[1])
+    if target is None:
+        await send_reply(update, "❌ 사용자를 찾을 수 없습니다.")
+        return
 
-    cursor.execute(
-        "SELECT tickets FROM users WHERE user_id = ?",
-        (user_id,),
+    username_text = f"@{target['username']}" if target["username"] else "없음"
+
+    await send_reply(
+        update,
+        "👤 사용자 조회\n\n"
+        f"이름: {target['display_name']}\n"
+        f"username: {username_text}\n"
+        f"Telegram ID: {target['user_id']}\n"
+        f"보유 뽑기권: {target['tickets']:,}장\n"
+        f"누적 뽑기: {target['total_draws']:,}회\n"
+        f"누적 당첨: {target['total_points']:,}포인트",
     )
 
-    row = cursor.fetchone()
-    count = row[0] if row else 0
 
-    await update.message.reply_text(
-        f"🎫 현재 보유 뽑기권 : {count}장"
+async def handle_stats(update: Update) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        await send_reply(update, "❌ 관리자만 사용할 수 있는 명령어입니다.")
+        return
+
+    stats = get_global_stats()
+
+    await send_reply(
+        update,
+        "📊 전체 통계\n\n"
+        f"등록 사용자: {stats['user_count']:,}명\n"
+        f"남은 뽑기권: {stats['ticket_count']:,}장\n"
+        f"누적 뽑기: {stats['draw_count']:,}회\n"
+        f"누적 당첨: {stats['point_count']:,}포인트",
     )
 
 
-# =====================
-# 뽑기
-# =====================
+async def handle_recent_draws(update: Update) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        await send_reply(update, "❌ 관리자만 사용할 수 있는 명령어입니다.")
+        return
 
-async def draw(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    async with draw_lock:
-        save_user(update.effective_user)
+    rows = get_recent_draws(10)
+    if not rows:
+        await send_reply(update, "최근 당첨 기록이 없습니다.")
+        return
 
-        user_id = update.effective_user.id
-        name = update.effective_user.first_name or "참여자"
-
-        cursor.execute(
-            "SELECT tickets FROM users WHERE user_id = ?",
-            (user_id,),
+    lines = ["🧾 최근 당첨 10건", ""]
+    for row in rows:
+        name = f"@{row['username']}" if row["username"] else str(row["user_id"])
+        lines.append(
+            f"• {name} — {row['reward']:,}포인트 "
+            f"(잔여 {row['remaining_tickets']:,}장)"
         )
 
-        row = cursor.fetchone()
-        count = row[0] if row else 0
+    await send_reply(update, "\n".join(lines))
 
-        if count <= 0:
-            await update.message.reply_text(
-                "🎫 보유한 뽑기권이 없습니다."
-            )
-            return
-
-        # 보유권이 있을 때만 1장 차감
-        cursor.execute(
-            """
-            UPDATE users
-            SET tickets = tickets - 1
-            WHERE user_id = ?
-              AND tickets > 0
-            """,
-            (user_id,),
-        )
-
-        if cursor.rowcount != 1:
-            db.rollback()
-            await update.message.reply_text(
-                "❌ 뽑기권 처리 중 오류가 발생했습니다."
-            )
-            return
-
-        db.commit()
-
-        reward = random_reward()
-
-        await update.message.reply_text(
-            f"""🎉 뽑기 결과 🎉
-
-👤 참여자 : {name}
-
-━━━━━━━━━━━━━━
-
-🏆 당첨 상품
-
-✨ {reward} ✨
-
-━━━━━━━━━━━━━━
-
-🎫 남은 뽑기권 : {count - 1}장
-
-🍀 축하드립니다!"""
-        )
-
-
-# =====================
-# 한글 명령어 처리
-# =====================
 
 async def message_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message or not update.message.text:
+    if not update.effective_message or not update.effective_user:
         return
 
-    save_user(update.effective_user)
+    text = (update.effective_message.text or "").strip()
+    if not text:
+        return
 
-    text = update.message.text.strip()
+    user = update.effective_user
+    display_name = user.full_name or str(user.id)
 
-    # 그룹에서는 /시작@봇아이디 형태로 들어올 수도 있으므로
-    # 명령어 뒤의 @봇아이디를 제거해 처리
-    command = text.split()[0].split("@")[0]
+    try:
+        save_or_update_user(
+            user_id=user.id,
+            username=user.username,
+            display_name=display_name,
+        )
+    except sqlite3.Error:
+        logger.exception("사용자 저장 중 데이터베이스 오류")
+        await send_reply(update, "❌ 사용자 정보를 저장하지 못했습니다.")
+        return
 
-    if command == "/시작":
-        await start(update, context)
+    # 그룹에서 /명령어@봇아이디 형식으로 들어오는 경우도 처리
+    first_token = text.split()[0]
+    if "@" in first_token:
+        command_without_bot = first_token.split("@", 1)[0]
+        text = command_without_bot + text[len(first_token):]
 
-    elif command == "/도움말":
-        await help_command(update, context)
+    parts = text.split()
+    command = parts[0]
 
-    elif command == "/뽑기":
-        await draw(update, context)
+    try:
+        if command == "/시작":
+            await handle_start(update)
+        elif command == "/도움말":
+            await send_reply(
+                update,
+                help_message(user.id == ADMIN_ID),
+            )
+        elif command == "/내뽑기권":
+            await handle_my_tickets(update)
+        elif command == "/뽑기":
+            await handle_draw(update)
+        elif command == "/지급":
+            await handle_ticket_change(update, parts, is_add=True)
+        elif command == "/차감":
+            await handle_ticket_change(update, parts, is_add=False)
+        elif command == "/조회":
+            await handle_lookup(update, parts)
+        elif command == "/전체통계":
+            await handle_stats(update)
+        elif command == "/최근당첨":
+            await handle_recent_draws(update)
+    except sqlite3.Error:
+        logger.exception("데이터베이스 처리 오류")
+        await send_reply(
+            update,
+            "❌ 데이터베이스 처리 중 오류가 발생했습니다.",
+        )
+    except TelegramError:
+        logger.exception("텔레그램 API 오류")
+    except Exception:
+        logger.exception("예상하지 못한 오류")
+        await send_reply(
+            update,
+            "❌ 명령어 처리 중 오류가 발생했습니다.",
+        )
 
-    elif command == "/내뽑기권":
-        await my_ticket(update, context)
-
-    elif command == "/지급":
-        await give(update, context)
-
-
-# =====================
-# 오류 처리
-# =====================
 
 async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    print(f"오류 발생: {context.error}")
+    if isinstance(context.error, NetworkError):
+        logger.warning("네트워크 오류: %s", context.error)
+        return
+
+    logger.exception(
+        "처리되지 않은 오류",
+        exc_info=context.error,
+    )
+
+
+async def post_init(application: Application) -> None:
+    bot = await application.bot.get_me()
+    logger.info(
+        "봇 실행 완료: @%s (ID: %s)",
+        bot.username,
+        bot.id,
+    )
+
+
+def validate_settings() -> None:
+    if not TOKEN or TOKEN == "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk":
+        raise RuntimeError(
+            "bot.py 맨 위의 TOKEN에 실제 봇 토큰을 입력하세요."
+        )
+
+    if not isinstance(ADMIN_ID, int) or 7936160142 <= 0:
+        raise RuntimeError(
+            "ADMIN_ID에 관리자 Telegram 숫자 ID를 입력하세요."
+        )
+
+
+def main() -> None:
+    validate_settings()
+    initialize_database()
+
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+
+    # 한글 슬래시 명령어를 직접 비교하므로 CommandHandler를 사용하지 않습니다.
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.UpdateType.EDITED_MESSAGE,
+            message_handler,
+        )
+    )
+    application.add_error_handler(error_handler)
+
+    logger.info("데이터베이스 경로: %s", DB_PATH.resolve())
+    logger.info("텔레그램 봇 시작 중...")
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
