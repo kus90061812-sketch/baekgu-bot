@@ -165,8 +165,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
 
         user_id = int(target)
-        
-    cursor.execute(
+            cursor.execute(
         """
         INSERT INTO users(user_id, tickets)
         VALUES (?, ?)
@@ -258,37 +257,115 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute(
         """
         INSERT INTO users(user_id, username)
-
-        if text == "/시작":
-
-        await start(update, context)
-
-    elif text == "/도움말":
-
-        await help_command(update, context)
-
-    elif text == "/뽑기":
-
-        await draw(update, context)
-
-    elif text.startswith("/지급"):
-
-        await give(update, context)
-
-
-# =====================
-# 실행
-# =====================
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(
-    MessageHandler(
-        filters.TEXT,
-        message_handler
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET username=excluded.username
+        """,
+        (user.id, user.username)
     )
-)
 
-print("Bot is running")
+    db.commit()
 
-app.run_polling()
+    text = update.message.text
+        cursor.execute(
+        """
+        INSERT INTO users(user_id, tickets)
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET tickets = tickets + ?
+        """,
+        (user_id, amount, amount)
+    )
+
+    db.commit()
+
+    await update.message.reply_text(
+        f"🎫 {amount}장 지급 완료"
+    )
+
+
+# =====================
+# 뽑기
+# =====================
+
+async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    async with draw_lock:
+
+        user_id = update.effective_user.id
+        name = update.effective_user.first_name
+
+        cursor.execute(
+            "SELECT tickets FROM users WHERE user_id=?",
+            (user_id,)
+        )
+
+        data = cursor.fetchone()
+
+        count = data[0] if data else 0
+
+        if count <= 0:
+
+            await update.message.reply_text(
+                "🎫 보유한 뽑기권이 없습니다."
+            )
+
+            return
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET tickets = tickets - 1
+            WHERE user_id=?
+            """,
+            (user_id,)
+        )
+
+        db.commit()
+
+        reward = random_reward()
+
+        await update.message.reply_text(
+            f"""🎉 뽑기 결과 🎉
+
+👤 참여자 : {name}
+
+━━━━━━━━━━━━━━
+
+🏆 당첨 상품
+
+✨ {reward} ✨
+
+━━━━━━━━━━━━━━
+
+🎫 남은 뽑기권 : {count - 1}장
+
+🍀 다음 행운의 주인공은?"""
+        )
+
+
+# =====================
+# 한글 명령어 처리
+# =====================
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
+    # 사용자명 자동 저장
+    user = update.effective_user
+
+    cursor.execute(
+        """
+        INSERT INTO users(user_id, username)
+        VALUES (?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET username=excluded.username
+        """,
+        (user.id, user.username)
+    )
+
+    db.commit()
+
+    text = update.message.text
