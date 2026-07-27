@@ -165,6 +165,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
 
         user_id = int(target)
+        
             cursor.execute(
         """
         INSERT INTO users(user_id, tickets)
