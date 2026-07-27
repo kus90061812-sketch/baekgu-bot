@@ -19,7 +19,7 @@ from telegram.ext import (
 # =========================================================
 # 반드시 아래 두 값만 수정하세요.
 # =========================================================
-TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
+TOKEN = "8999195481:AAGdiAM4k7szCVX8DlPQoa9mxBdY4RaX6Q4"
 ADMIN_ID = 7936160142
 
 # Railway Volume을 /data 경로에 연결했다면 그대로 사용됩니다.
@@ -619,7 +619,7 @@ async def post_init(application: Application) -> None:
 
 
 def validate_settings() -> None:
-    if not TOKEN or TOKEN == "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk":
+    if not TOKEN or TOKEN == "8999195481:AAGdiAM4k7szCVX8DlPQoa9mxBdY4RaX6Q4":
         raise RuntimeError(
             "bot.py 맨 위의 TOKEN에 실제 봇 토큰을 입력하세요."
         )
