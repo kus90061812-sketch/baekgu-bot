@@ -624,14 +624,16 @@ def validate_settings() -> None:
             "bot.py 맨 위의 TOKEN에 실제 봇 토큰을 입력하세요."
         )
 
-    if not isinstance(ADMIN_ID, int) or 7936160142 <= 0:
+    if not isinstance(ADMIN_ID, int) or ADMIN_ID <= 0:
         raise RuntimeError(
             "ADMIN_ID에 관리자 Telegram 숫자 ID를 입력하세요."
         )
 
 
 def main() -> None:
-    validate_settings()
+    token_value = TOKEN.strip()
+    if ":" not in token_value or len(token_value) < 20:
+        raise RuntimeError("TOKEN 형식이 잘못됐습니다. BotFather 토큰 전체를 따옴표 안에 넣으세요.")
     initialize_database()
 
     application = (
@@ -661,4 +663,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
