@@ -1,5 +1,4 @@
 import asyncio
-import os
 import random
 import sqlite3
 
@@ -18,7 +17,7 @@ from telegram.ext import (
 
 # Railway Variables에 TOKEN을 등록하면 자동으로 불러옵니다.
 # 환경변수를 쓰지 않을 경우 아래 기본값을 실제 토큰으로 바꿔도 됩니다.
-TOKEN = os.getenv("TOKEN", "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk")
+TOKEN = "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk"
 
 # 관리자 텔레그램 숫자 ID
 ADMIN_ID = 7936160142
@@ -415,46 +414,3 @@ async def error_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     print(f"오류 발생: {context.error}")
-
-
-# =====================
-# 실행
-# =====================
-
-def main() -> None:
-    if not TOKEN or TOKEN == "8999195481:AAHgynutwqksHttyHEjUe86nwexayAwAqQk":
-        raise RuntimeError(
-            "TOKEN이 설정되지 않았습니다. "
-            "Railway Variables에 TOKEN을 등록하거나 bot.py에 직접 입력하세요."
-        )
-
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            message_handler,
-        )
-    )
-
-    # 한글 슬래시 명령어는 filters.COMMAND가 처리하지 못하는 경우가 있어
-    # 텍스트 메시지 전체를 받는 핸들러도 추가
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT,
-            message_handler,
-        ),
-        group=1,
-    )
-
-    app.add_error_handler(error_handler)
-
-    print("Bot is running")
-
-    app.run_polling(
-        drop_pending_updates=True,
-    )
-
-
-if __name__ == "__main__":
-    main()
