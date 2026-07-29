@@ -601,6 +601,47 @@ async def chat_mining(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def korean_command_router(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """한글 슬래시 명령어를 직접 분기합니다."""
+    message = update.effective_message
+    if not message or not message.text:
+        return
+
+    raw = message.text.strip()
+    if not raw.startswith("/"):
+        return
+
+    first, *rest = raw.split()
+    command = first[1:].split("@", 1)[0]
+    context.args = rest
+
+    handlers = {
+        "시작": start,
+        "도움말": help_command,
+        "내뽑기권": my_tickets,
+        "내포인트": my_points,
+        "출석": attendance,
+        "뽑기": draw,
+        "뽑기랭킹": draw_ranking,
+        "포인트랭킹": point_ranking,
+        "뽑기권구매": buy_tickets,
+        "지급": give_tickets,
+        "회수": take_tickets,
+        "포인트지급": give_points,
+        "포인트회수": take_points,
+        "가위바위보": rps_command,
+        "가위바위보전적": rps_stats,
+        "가위바위보랭킹": rps_ranking,
+    }
+
+    handler = handlers.get(command)
+    if handler:
+        await handler(update, context)
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled error", exc_info=context.error)
 
@@ -617,30 +658,19 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("시작", start))
-    app.add_handler(CommandHandler("도움말", help_command))
     app.add_handler(CommandHandler("help", help_command))
-
-    app.add_handler(CommandHandler("내뽑기권", my_tickets))
-    app.add_handler(CommandHandler("내포인트", my_points))
-    app.add_handler(CommandHandler("출석", attendance))
-    app.add_handler(CommandHandler("뽑기", draw))
-    app.add_handler(CommandHandler("뽑기랭킹", draw_ranking))
-    app.add_handler(CommandHandler("포인트랭킹", point_ranking))
-    app.add_handler(CommandHandler("뽑기권구매", buy_tickets))
-
-    app.add_handler(CommandHandler("지급", give_tickets))
-    app.add_handler(CommandHandler("회수", take_tickets))
-    app.add_handler(CommandHandler("포인트지급", give_points))
-    app.add_handler(CommandHandler("포인트회수", take_points))
-
-    app.add_handler(CommandHandler("가위바위보", rps_command))
-    app.add_handler(CommandHandler("가위바위보전적", rps_stats))
-    app.add_handler(CommandHandler("가위바위보랭킹", rps_ranking))
     app.add_handler(CallbackQueryHandler(rps_callback, pattern=r"^rps_"))
 
+    # python-telegram-bot의 CommandHandler는 한글 명령어를 허용하지 않으므로
+    # 한글 슬래시 명령어는 일반 텍스트 핸들러에서 직접 분기합니다.
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_mining)
+        MessageHandler(filters.Regex(r"^/[^\s]+"), korean_command_router),
+        group=0,
+    )
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, chat_mining),
+        group=1,
     )
 
     app.add_error_handler(error_handler)
