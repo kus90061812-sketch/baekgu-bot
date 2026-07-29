@@ -633,29 +633,29 @@ def accept_rps_game(game_id, opponent_id):
             (bet, now, int(game["challenger_id"]), int(game["opponent_id"])),
         )
 
-        conn.executemany(
-            """
-            INSERT INTO game_point_logs (
-                user_id, amount, reason, related_user_id, game_id, created_at
-            )
-            VALUES (%s, %s, 'rps_bet', %s, %s, %s)
-            """,
-            [
-                (
-                    int(game["challenger_id"]),
-                    -bet,
-                    int(game["opponent_id"]),
-                    game_id,
-                    now,
-                ),
-                (
-                    int(game["opponent_id"]),
-                    -bet,
-                    int(game["challenger_id"]),
-                    game_id,
-                    now,
-                ),
-            ],
+        cursor.executemany(
+    """
+    INSERT INTO game_point_logs (
+        user_id, amount, reason, related_user_id, game_id, created_at
+    )
+    VALUES (%s, %s, 'rps_bet', %s, %s, %s)
+    """,
+    [
+        (
+            int(game["challenger_id"]),
+            -bet,
+            int(game["opponent_id"]),
+            game_id,
+            now,
+        ),
+        (
+            int(game["opponent_id"]),
+            -bet,
+            int(game["challenger_id"]),
+            game_id,
+            now,
+        ),
+    ],
         )
 
         conn.execute(
