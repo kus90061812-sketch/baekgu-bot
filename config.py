@@ -1,10 +1,5 @@
 import os
 
-# Railway Variables 권장:
-# BOT_TOKEN=...
-# ADMIN_IDS=123456789,987654321
-# DB_PATH=/data/bot.db
-
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 ADMIN_IDS = {
@@ -13,14 +8,13 @@ ADMIN_IDS = {
     if x.strip().isdigit()
 }
 
-DB_PATH = os.environ.get("DB_PATH", "bot.db").strip()
-
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 BOT_TITLE = os.environ.get("BOT_TITLE", "행운 뽑기봇").strip()
 
-# 한 번에 가능한 최대 뽑기 횟수
 MAX_MULTI_DRAW = 50
 
-# 보상 형식: ("표시 이름", 실제 포인트, 가중치)
+# 형식: ("표시 이름", 실제 지급 포인트, 가중치)
+# 가중치 합계 100
 REWARDS = [
     ("3,000포인트", 3000, 50.0),
     ("5,000포인트", 5000, 30.0),
@@ -30,16 +24,18 @@ REWARDS = [
     ("100,000포인트", 100000, 0.5),
 ]
 
-# 채팅 채굴 설정
-MINING_CHANCE = 0.10             # 10%
+# 일반 채팅을 칠 때마다 확률 판정
+MINING_CHANCE = 0.10
 MINING_MIN_POINTS = 10
 MINING_MAX_POINTS = 50
-MINING_COOLDOWN_SECONDS = 60     # 1분마다 1회 판정
 
-# 게임포인트 → 뽑기권 구매 설정
-TICKET_PRICE = 1000              # 게임포인트 1,000P = 뽑기권 1장
-MAX_TICKET_PURCHASE = 100        # 한 번에 최대 100장
+# 출석
+ATTENDANCE_REWARD = 500
 
-# 가위바위보 설정
+# 게임포인트 → 뽑기권
+TICKET_PRICE = 1000
+MAX_TICKET_PURCHASE = 100
+
+# 가위바위보
 MIN_RPS_BET = 100
 MAX_RPS_BET = 1_000_000
