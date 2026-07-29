@@ -122,6 +122,31 @@ def init_db():
             net_points BIGINT NOT NULL DEFAULT 0
         )
         """,
+
+        """
+        CREATE TABLE IF NOT EXISTS point_drops (
+            drop_id TEXT PRIMARY KEY,
+            chat_id BIGINT NOT NULL,
+            message_id BIGINT,
+            creator_id BIGINT NOT NULL,
+            total_points BIGINT NOT NULL,
+            max_claims BIGINT NOT NULL,
+            points_per_claim BIGINT NOT NULL,
+            claimed_count BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS point_drop_claims (
+            drop_id TEXT NOT NULL REFERENCES point_drops(drop_id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL REFERENCES users(user_id),
+            points BIGINT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (drop_id, user_id)
+        )
+        """,
         """
         CREATE INDEX IF NOT EXISTS idx_draw_history_user
         ON draw_history(user_id, id DESC)
@@ -930,6 +955,198 @@ def settle_rps_game(game_id, winner_id):
         )
 
         return pot
+
+
+
+def create_point_drop(
+    drop_id,
+    chat_id,
+    creator_id,
+    total_points,
+    max_claims,
+    message_id=None,
+):
+    total_points = int(total_points)
+    max_claims = int(max_claims)
+
+    if total_points < 1 or max_claims < 1:
+        raise ValueError("총 포인트와 인원은 1 이상이어야 합니다.")
+
+    if total_points % max_claims != 0:
+        raise ValueError("총 포인트가 인원수로 나누어떨어져야 합니다.")
+
+    points_per_claim = total_points // max_claims
+    now = now_iso()
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO point_drops (
+                drop_id, chat_id, message_id, creator_id,
+                total_points, max_claims, points_per_claim,
+                claimed_count, status, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'active', %s, %s)
+            """,
+            (
+                drop_id,
+                int(chat_id),
+                message_id,
+                int(creator_id),
+                total_points,
+                max_claims,
+                points_per_claim,
+                now,
+                now,
+            ),
+        )
+
+    return points_per_claim
+
+
+def set_point_drop_message_id(drop_id, message_id):
+    with db() as conn:
+        conn.execute(
+            """
+            UPDATE point_drops
+            SET message_id = %s, updated_at = %s
+            WHERE drop_id = %s
+            """,
+            (int(message_id), now_iso(), drop_id),
+        )
+
+
+def get_point_drop(drop_id):
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM point_drops
+            WHERE drop_id = %s
+            """,
+            (drop_id,),
+        ).fetchone()
+
+
+def claim_point_drop(drop_id, user_id):
+    user_id = int(user_id)
+
+    with db() as conn:
+        drop = conn.execute(
+            """
+            SELECT *
+            FROM point_drops
+            WHERE drop_id = %s
+            FOR UPDATE
+            """,
+            (drop_id,),
+        ).fetchone()
+
+        if not drop:
+            raise ValueError("존재하지 않는 포인트 뿌리기입니다.")
+
+        if drop["status"] != "active":
+            raise ValueError("이미 종료된 포인트 뿌리기입니다.")
+
+        if int(drop["creator_id"]) == user_id:
+            raise ValueError("뿌리기를 만든 사람은 받을 수 없습니다.")
+
+        already = conn.execute(
+            """
+            SELECT 1
+            FROM point_drop_claims
+            WHERE drop_id = %s AND user_id = %s
+            """,
+            (drop_id, user_id),
+        ).fetchone()
+
+        if already:
+            raise ValueError("이미 포인트를 받았습니다.")
+
+        claimed_count = int(drop["claimed_count"])
+        max_claims = int(drop["max_claims"])
+
+        if claimed_count >= max_claims:
+            conn.execute(
+                """
+                UPDATE point_drops
+                SET status = 'finished', updated_at = %s
+                WHERE drop_id = %s
+                """,
+                (now_iso(), drop_id),
+            )
+            raise ValueError("선착순 지급이 종료되었습니다.")
+
+        user = conn.execute(
+            """
+            SELECT game_points
+            FROM users
+            WHERE user_id = %s
+            FOR UPDATE
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if not user:
+            raise ValueError("먼저 채팅을 한 번 입력한 뒤 다시 눌러주세요.")
+
+        points = int(drop["points_per_claim"])
+        new_count = claimed_count + 1
+        new_status = "finished" if new_count >= max_claims else "active"
+        now = now_iso()
+
+        conn.execute(
+            """
+            UPDATE users
+            SET game_points = game_points + %s, updated_at = %s
+            WHERE user_id = %s
+            """,
+            (points, now, user_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO point_drop_claims (
+                drop_id, user_id, points, created_at
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (drop_id, user_id, points, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO game_point_logs (
+                user_id, amount, reason, related_user_id, game_id, created_at
+            )
+            VALUES (%s, %s, 'point_drop', %s, %s, %s)
+            """,
+            (
+                user_id,
+                points,
+                int(drop["creator_id"]),
+                drop_id,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE point_drops
+            SET claimed_count = %s, status = %s, updated_at = %s
+            WHERE drop_id = %s
+            """,
+            (new_count, new_status, now, drop_id),
+        )
+
+        balance = int(user["game_points"]) + points
+
+        return {
+            "points": points,
+            "balance": balance,
+            "claimed_count": new_count,
+            "max_claims": max_claims,
+            "status": new_status,
+            "total_points": int(drop["total_points"]),
+            "points_per_claim": points,
+        }
 
 
 def get_rps_stats(user_id):
