@@ -36,10 +36,13 @@ from database import (
     change_game_points,
     change_tickets,
     claim_attendance,
+    claim_point_drop,
+    create_point_drop,
     create_rps_game,
     decline_rps_game,
     find_user_by_username,
     get_game_point_ranking,
+    get_point_drop,
     get_ranking,
     get_rps_game,
     get_rps_ranking,
@@ -49,6 +52,7 @@ from database import (
     perform_draws,
     save_rps_choice,
     set_rps_message_id,
+    set_point_drop_message_id,
     settle_rps_game,
     upsert_user,
 )
@@ -121,7 +125,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 게임포인트\n"
         "/내포인트\n"
         "/포인트랭킹\n"
-        "/출석\n\n"
+        "/출석\n"
+        "/뿌리기 [총포인트] [인원] (관리자)\n\n"
         "✊ 가위바위보\n"
         "상대 메시지에 답장 후 /가위바위보 [금액]\n"
         "/가위바위보전적\n"
@@ -369,6 +374,119 @@ async def point_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.effective_message.reply_text("\n".join(lines))
+
+
+async def point_drop_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await register_user(update)
+
+    if not is_admin(update.effective_user.id):
+        await update.effective_message.reply_text("관리자 전용 명령어입니다.")
+        return
+
+    if len(context.args) != 2:
+        await update.effective_message.reply_text(
+            "사용법: /뿌리기 [총포인트] [인원]\n"
+            "예시: /뿌리기 30 5"
+        )
+        return
+
+    try:
+        total_points = int(context.args[0].replace(",", ""))
+        max_claims = int(context.args[1].replace(",", ""))
+
+        if total_points < 1 or max_claims < 1:
+            raise ValueError("총 포인트와 인원은 1 이상이어야 합니다.")
+
+        if max_claims > 100:
+            raise ValueError("한 번에 최대 100명까지 가능합니다.")
+
+        if total_points % max_claims != 0:
+            raise ValueError("총 포인트가 인원수로 나누어떨어져야 합니다.")
+
+        points_per_claim = total_points // max_claims
+        drop_id = uuid.uuid4().hex[:16]
+
+        create_point_drop(
+            drop_id,
+            update.effective_chat.id,
+            update.effective_user.id,
+            total_points,
+            max_claims,
+        )
+    except ValueError as exc:
+        await update.effective_message.reply_text(str(exc))
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton(
+                f"🎁 받기 (0/{max_claims})",
+                callback_data=f"drop_claim:{drop_id}",
+            )
+        ]]
+    )
+
+    sent = await update.effective_message.reply_text(
+        f"🎁 포인트 뿌리기!\n\n"
+        f"총 포인트: {total_points:,}P\n"
+        f"선착순: {max_claims:,}명\n"
+        f"1명당: {points_per_claim:,}P\n\n"
+        f"아래 버튼을 먼저 누른 사람이 받습니다.",
+        reply_markup=keyboard,
+    )
+
+    set_point_drop_message_id(drop_id, sent.message_id)
+
+
+async def point_drop_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    user = query.from_user
+
+    upsert_user(user.id, user.username, display_name(user))
+
+    drop_id = (query.data or "").split(":", 1)[1]
+
+    try:
+        result = claim_point_drop(drop_id, user.id)
+    except ValueError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
+
+    await query.answer(
+        f"{result['points']:,}P를 받았습니다! "
+        f"현재 {result['balance']:,}P",
+        show_alert=True,
+    )
+
+    if result["status"] == "finished":
+        text = (
+            f"✅ 포인트 뿌리기 종료!\n\n"
+            f"총 포인트: {result['total_points']:,}P\n"
+            f"지급 인원: {result['max_claims']:,}명\n"
+            f"1명당: {result['points_per_claim']:,}P\n\n"
+            f"선착순 지급이 완료되었습니다."
+        )
+        await query.edit_message_text(text)
+    else:
+        keyboard = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton(
+                    f"🎁 받기 "
+                    f"({result['claimed_count']}/{result['max_claims']})",
+                    callback_data=f"drop_claim:{drop_id}",
+                )
+            ]]
+        )
+        try:
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+        except Exception:
+            logger.exception("뿌리기 버튼 갱신 실패")
 
 
 async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -624,6 +742,7 @@ async def korean_command_router(
         "내뽑기권": my_tickets,
         "내포인트": my_points,
         "출석": attendance,
+        "뿌리기": point_drop_command,
         "뽑기": draw,
         "뽑기랭킹": draw_ranking,
         "포인트랭킹": point_ranking,
@@ -660,6 +779,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(rps_callback, pattern=r"^rps_"))
+    app.add_handler(
+        CallbackQueryHandler(point_drop_callback, pattern=r"^drop_claim:")
+    )
 
     # python-telegram-bot의 CommandHandler는 한글 명령어를 허용하지 않으므로
     # 한글 슬래시 명령어는 일반 텍스트 핸들러에서 직접 분기합니다.
