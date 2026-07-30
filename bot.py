@@ -35,6 +35,8 @@ from config import (
     ODD_EVEN_PAYOUT,
     REWARDS,
     TICKET_PRICE,
+    RPS_RECRUIT_TIMEOUT,
+    RPS_CHOICE_TIMEOUT,
 )
 from database import (
     add_mined_points,
@@ -73,9 +75,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-RPS_RECRUIT_TIMEOUT = 30
-RPS_CHOICE_TIMEOUT = 30
 
 def get_odd_even_payout_ratio():
     try:
