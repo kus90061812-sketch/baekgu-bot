@@ -46,6 +46,7 @@ from database import (
     change_tickets,
     claim_attendance,
     claim_point_drop,
+    cleanup_expired_rps_games,
     create_odd_even_game,
     create_point_drop,
     create_rps_game,
@@ -75,6 +76,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
 
 def get_odd_even_payout_ratio():
     try:
@@ -545,6 +547,51 @@ async def safe_edit(application, chat_id, message_id, text, reply_markup=None):
         logger.exception("메시지 수정 실패")
 
 
+async def process_expired_rps_games(application):
+    try:
+        expired_games = await asyncio.to_thread(
+            cleanup_expired_rps_games
+        )
+    except Exception:
+        logger.exception("만료된 가위바위보 정리 실패")
+        return
+
+    for result in expired_games:
+        if result["previous_status"] == "pending":
+            text = "⌛ 참가자가 없어 가위바위보가 자동 취소되었습니다."
+        else:
+            text = (
+                "⌛ 선택 시간이 초과되어 게임이 자동 취소되었습니다.\n"
+                "양쪽 배팅 포인트가 모두 반환되었습니다."
+            )
+
+        await safe_edit(
+            application,
+            result["chat_id"],
+            result["message_id"],
+            text,
+        )
+
+
+async def rps_expiry_worker(application):
+    while True:
+        try:
+            await process_expired_rps_games(application)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("가위바위보 만료 감시 오류")
+            await asyncio.sleep(5)
+
+
+async def post_init(application):
+    await process_expired_rps_games(application)
+    application.bot_data["rps_expiry_task"] = asyncio.create_task(
+        rps_expiry_worker(application)
+    )
+
+
 async def rps_recruit_timeout(application, game_id):
     await asyncio.sleep(RPS_RECRUIT_TIMEOUT)
     result = cancel_rps_game(game_id, "pending")
@@ -984,7 +1031,12 @@ def main():
 
     init_db()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))

@@ -4,7 +4,11 @@ from datetime import datetime, timezone, timedelta
 import psycopg
 from psycopg.rows import dict_row
 
-from config import DATABASE_URL
+from config import (
+    DATABASE_URL,
+    RPS_RECRUIT_TIMEOUT,
+    RPS_CHOICE_TIMEOUT,
+)
 
 
 KST = timezone(timedelta(hours=9))
@@ -111,6 +115,10 @@ def init_db():
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
+        """,
+        """
+        ALTER TABLE rps_games
+        ADD COLUMN IF NOT EXISTS choice_started_at TEXT
         """,
         """
         ALTER TABLE rps_games
@@ -236,16 +244,13 @@ def get_user(user_id):
             "SELECT * FROM users WHERE user_id = %s",
             (int(user_id),),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         return row
 
 
 def find_user_by_username(username):
     clean = username.lstrip("@").lower()
-
     with db() as conn:
         return conn.execute(
             "SELECT * FROM users WHERE lower(username) = %s",
@@ -256,30 +261,20 @@ def find_user_by_username(username):
 def change_tickets(admin_id, user_id, amount, chat_id):
     amount = int(amount)
     user_id = int(user_id)
-
     with db() as conn:
         row = conn.execute(
             "SELECT tickets FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         before = int(row["tickets"])
         after = before + amount
-
         if after < 0:
             raise ValueError("보유 뽑기권보다 많이 회수할 수 없습니다.")
-
         now = now_iso()
-
         conn.execute(
-            """
-            UPDATE users
-            SET tickets = %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET tickets = %s, updated_at = %s WHERE user_id = %s",
             (after, now, user_id),
         )
         conn.execute(
@@ -291,34 +286,25 @@ def change_tickets(admin_id, user_id, amount, chat_id):
             """,
             (int(admin_id), user_id, amount, int(chat_id), now),
         )
-
         return before, after
 
 
 def perform_draws(user_id, rewards, count):
     user_id = int(user_id)
     count = int(count)
-
     with db() as conn:
         row = conn.execute(
             "SELECT tickets FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         tickets = int(row["tickets"])
-
         if tickets < count:
-            raise ValueError(
-                f"뽑기권이 부족합니다. 현재 {tickets:,}장 보유 중입니다."
-            )
-
+            raise ValueError(f"뽑기권이 부족합니다. 현재 {tickets:,}장 보유 중입니다.")
         total = sum(int(points) for _, points in rewards)
         remaining = tickets - count
         now = now_iso()
-
         conn.execute(
             """
             UPDATE users
@@ -330,7 +316,6 @@ def perform_draws(user_id, rewards, count):
             """,
             (remaining, total, count, now, user_id),
         )
-
         for name, points in rewards:
             conn.execute(
                 """
@@ -341,7 +326,6 @@ def perform_draws(user_id, rewards, count):
                 """,
                 (user_id, name, int(points), now),
             )
-
         return remaining, total
 
 
@@ -362,25 +346,17 @@ def get_ranking(limit=10):
 def add_mined_points(user_id, amount):
     user_id = int(user_id)
     amount = int(amount)
-
     with db() as conn:
         row = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         now = now_iso()
         balance = int(row["game_points"]) + amount
-
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = %s, updated_at = %s WHERE user_id = %s",
             (balance, now, user_id),
         )
         conn.execute(
@@ -392,37 +368,26 @@ def add_mined_points(user_id, amount):
             """,
             (user_id, amount, now),
         )
-
         return balance
 
 
 def change_game_points(admin_id, user_id, amount, chat_id):
     amount = int(amount)
     user_id = int(user_id)
-
     with db() as conn:
         row = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         before = int(row["game_points"])
         after = before + amount
-
         if after < 0:
             raise ValueError("보유 게임포인트보다 많이 회수할 수 없습니다.")
-
         now = now_iso()
-
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = %s, updated_at = %s WHERE user_id = %s",
             (after, now, user_id),
         )
         conn.execute(
@@ -440,7 +405,6 @@ def change_game_points(admin_id, user_id, amount, chat_id):
                 now,
             ),
         )
-
         return before, after
 
 
@@ -449,20 +413,13 @@ def claim_attendance(user_id, reward):
     reward = int(reward)
     date_key = today_kst()
     now = now_iso()
-
     with db() as conn:
         exists = conn.execute(
-            """
-            SELECT 1
-            FROM attendance
-            WHERE user_id = %s AND attendance_date = %s
-            """,
+            "SELECT 1 FROM attendance WHERE user_id = %s AND attendance_date = %s",
             (user_id, date_key),
         ).fetchone()
-
         if exists:
             return False, None
-
         conn.execute(
             """
             INSERT INTO attendance (
@@ -473,11 +430,7 @@ def claim_attendance(user_id, reward):
             (user_id, date_key, reward, now),
         )
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = game_points + %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = game_points + %s, updated_at = %s WHERE user_id = %s",
             (reward, now, user_id),
         )
         conn.execute(
@@ -489,12 +442,10 @@ def claim_attendance(user_id, reward):
             """,
             (user_id, reward, now),
         )
-
         balance = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s",
             (user_id,),
         ).fetchone()
-
         return True, int(balance["game_points"])
 
 
@@ -502,32 +453,21 @@ def buy_tickets_with_points(user_id, quantity, ticket_price):
     user_id = int(user_id)
     quantity = int(quantity)
     cost = quantity * int(ticket_price)
-
     if quantity < 1:
         raise ValueError("구매 수량은 1장 이상이어야 합니다.")
-
     with db() as conn:
         row = conn.execute(
-            """
-            SELECT game_points, tickets
-            FROM users
-            WHERE user_id = %s
-            FOR UPDATE
-            """,
+            "SELECT game_points, tickets FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not row:
             raise ValueError("등록되지 않은 회원입니다.")
-
         if int(row["game_points"]) < cost:
             raise ValueError(
                 f"게임포인트가 부족합니다. 필요: {cost:,}P / "
                 f"보유: {int(row['game_points']):,}P"
             )
-
         now = now_iso()
-
         conn.execute(
             """
             UPDATE users
@@ -547,16 +487,10 @@ def buy_tickets_with_points(user_id, quantity, ticket_price):
             """,
             (user_id, -cost, now),
         )
-
         updated = conn.execute(
-            """
-            SELECT game_points, tickets
-            FROM users
-            WHERE user_id = %s
-            """,
+            "SELECT game_points, tickets FROM users WHERE user_id = %s",
             (user_id,),
         ).fetchone()
-
         return int(updated["game_points"]), int(updated["tickets"]), cost
 
 
@@ -577,7 +511,6 @@ def get_game_point_ranking(limit=10):
 def create_rps_game(game_id, chat_id, challenger_id, bet, message_id=None):
     challenger_id = int(challenger_id)
     bet = int(bet)
-
     with db() as conn:
         active = conn.execute(
             """
@@ -589,20 +522,15 @@ def create_rps_game(game_id, chat_id, challenger_id, bet, message_id=None):
             """,
             (challenger_id, challenger_id),
         ).fetchone()
-
         if active:
             raise ValueError("이미 진행 중인 가위바위보가 있습니다.")
-
         challenger = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s",
             (challenger_id,),
         ).fetchone()
-
         if not challenger or int(challenger["game_points"]) < bet:
             raise ValueError("게임포인트가 부족합니다.")
-
         now = now_iso()
-
         conn.execute(
             """
             INSERT INTO rps_games (
@@ -611,26 +539,14 @@ def create_rps_game(game_id, chat_id, challenger_id, bet, message_id=None):
             )
             VALUES (%s, %s, %s, %s, NULL, %s, 'pending', %s, %s)
             """,
-            (
-                game_id,
-                int(chat_id),
-                message_id,
-                challenger_id,
-                bet,
-                now,
-                now,
-            ),
+            (game_id, int(chat_id), message_id, challenger_id, bet, now, now),
         )
 
 
 def set_rps_message_id(game_id, message_id):
     with db() as conn:
         conn.execute(
-            """
-            UPDATE rps_games
-            SET message_id = %s, updated_at = %s
-            WHERE game_id = %s
-            """,
+            "UPDATE rps_games SET message_id = %s, updated_at = %s WHERE game_id = %s",
             (int(message_id), now_iso(), game_id),
         )
 
@@ -653,23 +569,122 @@ def get_rps_game(game_id):
         ).fetchone()
 
 
+def _parse_rps_time(value):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _rps_expired(game):
+    if game["status"] == "pending":
+        started_at = _parse_rps_time(game["created_at"])
+        timeout = RPS_RECRUIT_TIMEOUT
+    elif game["status"] == "playing":
+        started_at = _parse_rps_time(
+            game["choice_started_at"] or game["updated_at"]
+        )
+        timeout = RPS_CHOICE_TIMEOUT
+    else:
+        return False
+    return (
+        datetime.now(timezone.utc) - started_at
+    ).total_seconds() >= timeout
+
+
+def _cancel_rps_game_locked(conn, game, expected_status):
+    if not game or game["status"] != expected_status:
+        return None
+    now = now_iso()
+    if expected_status == "playing":
+        challenger_id = int(game["challenger_id"])
+        opponent_id = int(game["opponent_id"])
+        bet = int(game["bet"])
+        conn.execute(
+            """
+            UPDATE users
+            SET game_points = game_points + %s, updated_at = %s
+            WHERE user_id IN (%s, %s)
+            """,
+            (bet, now, challenger_id, opponent_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO game_point_logs (
+                user_id, amount, reason, related_user_id, game_id, created_at
+            )
+            VALUES (%s, %s, 'rps_timeout_refund', %s, %s, %s)
+            """,
+            (challenger_id, bet, opponent_id, game["game_id"], now),
+        )
+        conn.execute(
+            """
+            INSERT INTO game_point_logs (
+                user_id, amount, reason, related_user_id, game_id, created_at
+            )
+            VALUES (%s, %s, 'rps_timeout_refund', %s, %s, %s)
+            """,
+            (opponent_id, bet, challenger_id, game["game_id"], now),
+        )
+    conn.execute(
+        """
+        UPDATE rps_games
+        SET status = 'cancelled', updated_at = %s
+        WHERE game_id = %s AND status = %s
+        """,
+        (now, game["game_id"], expected_status),
+    )
+    return {
+        "game_id": game["game_id"],
+        "previous_status": expected_status,
+        "chat_id": int(game["chat_id"]),
+        "message_id": (
+            int(game["message_id"])
+            if game["message_id"] is not None
+            else None
+        ),
+        "bet": int(game["bet"]),
+    }
+
+
+def cleanup_expired_rps_games():
+    results = []
+    with db() as conn:
+        games = conn.execute(
+            """
+            SELECT *
+            FROM rps_games
+            WHERE status IN ('pending', 'playing')
+            FOR UPDATE SKIP LOCKED
+            """
+        ).fetchall()
+        for game in games:
+            if _rps_expired(game):
+                result = _cancel_rps_game_locked(conn, game, game["status"])
+                if result:
+                    results.append(result)
+    return results
+
+
 def join_rps_game(game_id, opponent_id):
     opponent_id = int(opponent_id)
-
     with db() as conn:
         game = conn.execute(
             "SELECT * FROM rps_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
         if not game:
             raise ValueError("게임이 존재하지 않습니다.")
-
         if game["status"] != "pending":
             raise ValueError("이미 참가자가 정해졌거나 종료된 게임입니다.")
+        if _rps_expired(game):
+            _cancel_rps_game_locked(conn, game, "pending")
+            raise ValueError("참가 시간이 지나 자동 취소된 게임입니다.")
 
         challenger_id = int(game["challenger_id"])
-
         if opponent_id == challenger_id:
             raise ValueError("자신이 만든 게임에는 참가할 수 없습니다.")
 
@@ -684,12 +699,10 @@ def join_rps_game(game_id, opponent_id):
             """,
             (game_id, opponent_id, opponent_id),
         ).fetchone()
-
         if active:
             raise ValueError("이미 다른 가위바위보를 진행 중입니다.")
 
         bet = int(game["bet"])
-
         challenger = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s FOR UPDATE",
             (challenger_id,),
@@ -701,12 +714,10 @@ def join_rps_game(game_id, opponent_id):
 
         if not challenger or int(challenger["game_points"]) < bet:
             raise ValueError("개설자의 게임포인트가 부족합니다.")
-
         if not opponent or int(opponent["game_points"]) < bet:
             raise ValueError("게임포인트가 부족합니다.")
 
         now = now_iso()
-
         conn.execute(
             """
             UPDATE users
@@ -715,7 +726,6 @@ def join_rps_game(game_id, opponent_id):
             """,
             (bet, now, challenger_id, opponent_id),
         )
-
         conn.execute(
             """
             INSERT INTO game_point_logs (
@@ -734,18 +744,17 @@ def join_rps_game(game_id, opponent_id):
             """,
             (opponent_id, -bet, challenger_id, game_id, now),
         )
-
         conn.execute(
             """
             UPDATE rps_games
             SET opponent_id = %s,
                 status = 'playing',
+                choice_started_at = %s,
                 updated_at = %s
             WHERE game_id = %s
             """,
-            (opponent_id, now, game_id),
+            (opponent_id, now, now, game_id),
         )
-
         return conn.execute(
             """
             SELECT g.*,
@@ -766,93 +775,36 @@ def cancel_rps_game(game_id, expected_status):
             "SELECT * FROM rps_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
-        if not game or game["status"] != expected_status:
-            return None
-
-        now = now_iso()
-
-        if expected_status == "playing":
-            challenger_id = int(game["challenger_id"])
-            opponent_id = int(game["opponent_id"])
-            bet = int(game["bet"])
-
-            conn.execute(
-                """
-                UPDATE users
-                SET game_points = game_points + %s, updated_at = %s
-                WHERE user_id IN (%s, %s)
-                """,
-                (bet, now, challenger_id, opponent_id),
-            )
-
-            conn.execute(
-                """
-                INSERT INTO game_point_logs (
-                    user_id, amount, reason,
-                    related_user_id, game_id, created_at
-                )
-                VALUES (%s, %s, 'rps_timeout_refund', %s, %s, %s)
-                """,
-                (challenger_id, bet, opponent_id, game_id, now),
-            )
-            conn.execute(
-                """
-                INSERT INTO game_point_logs (
-                    user_id, amount, reason,
-                    related_user_id, game_id, created_at
-                )
-                VALUES (%s, %s, 'rps_timeout_refund', %s, %s, %s)
-                """,
-                (opponent_id, bet, challenger_id, game_id, now),
-            )
-
-        conn.execute(
-            """
-            UPDATE rps_games
-            SET status = 'cancelled', updated_at = %s
-            WHERE game_id = %s
-            """,
-            (now, game_id),
-        )
-
-        return {
-            "chat_id": int(game["chat_id"]),
-            "message_id": (
-                int(game["message_id"]) if game["message_id"] is not None else None
-            ),
-            "bet": int(game["bet"]),
-        }
+        return _cancel_rps_game_locked(conn, game, expected_status)
 
 
 def save_rps_choice(game_id, user_id, choice):
     if choice not in ("scissors", "rock", "paper"):
         raise ValueError("잘못된 선택입니다.")
-
     user_id = int(user_id)
-
     with db() as conn:
         game = conn.execute(
             "SELECT * FROM rps_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
         if not game:
             raise ValueError("게임이 존재하지 않습니다.")
-
         if game["status"] != "playing":
             raise ValueError("진행 중인 게임이 아닙니다.")
-
+        if _rps_expired(game):
+            _cancel_rps_game_locked(conn, game, "playing")
+            raise ValueError(
+                "선택 시간이 지나 게임이 취소됐으며 "
+                "양쪽 포인트가 반환되었습니다."
+            )
         if user_id == int(game["challenger_id"]):
             column = "challenger_choice"
         elif user_id == int(game["opponent_id"]):
             column = "opponent_choice"
         else:
             raise ValueError("게임 참가자만 선택할 수 있습니다.")
-
         if game[column]:
             raise ValueError("이미 선택했습니다.")
-
         conn.execute(
             f"""
             UPDATE rps_games
@@ -861,7 +813,6 @@ def save_rps_choice(game_id, user_id, choice):
             """,
             (choice, now_iso(), game_id),
         )
-
         return conn.execute(
             "SELECT * FROM rps_games WHERE game_id = %s",
             (game_id,),
@@ -874,10 +825,8 @@ def settle_rps_game(game_id, winner_id):
             "SELECT * FROM rps_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
         if not game:
             raise ValueError("게임이 존재하지 않습니다.")
-
         if game["status"] != "playing":
             raise ValueError("이미 종료된 게임입니다.")
 
@@ -896,7 +845,6 @@ def settle_rps_game(game_id, winner_id):
                 """,
                 (bet, now, challenger_id, opponent_id),
             )
-
             for user_id in (challenger_id, opponent_id):
                 conn.execute(
                     """
@@ -924,24 +872,14 @@ def settle_rps_game(game_id, winner_id):
                         now,
                     ),
                 )
-
             status = "draw"
         else:
             winner_id = int(winner_id)
-
             if winner_id not in (challenger_id, opponent_id):
                 raise ValueError("승자 정보가 올바르지 않습니다.")
-
-            loser_id = (
-                opponent_id if winner_id == challenger_id else challenger_id
-            )
-
+            loser_id = opponent_id if winner_id == challenger_id else challenger_id
             conn.execute(
-                """
-                UPDATE users
-                SET game_points = game_points + %s, updated_at = %s
-                WHERE user_id = %s
-                """,
+                "UPDATE users SET game_points = game_points + %s, updated_at = %s WHERE user_id = %s",
                 (pot, now, winner_id),
             )
             conn.execute(
@@ -954,12 +892,9 @@ def settle_rps_game(game_id, winner_id):
                 """,
                 (winner_id, pot, loser_id, game_id, now),
             )
-
             conn.execute(
                 """
-                INSERT INTO rps_stats (
-                    user_id, wins, games, net_points
-                )
+                INSERT INTO rps_stats (user_id, wins, games, net_points)
                 VALUES (%s, 1, 1, %s)
                 ON CONFLICT(user_id) DO UPDATE SET
                     wins = rps_stats.wins + 1,
@@ -970,9 +905,7 @@ def settle_rps_game(game_id, winner_id):
             )
             conn.execute(
                 """
-                INSERT INTO rps_stats (
-                    user_id, losses, games, net_points
-                )
+                INSERT INTO rps_stats (user_id, losses, games, net_points)
                 VALUES (%s, 1, 1, %s)
                 ON CONFLICT(user_id) DO UPDATE SET
                     losses = rps_stats.losses + 1,
@@ -981,7 +914,6 @@ def settle_rps_game(game_id, winner_id):
                 """,
                 (loser_id, -bet),
             )
-
             status = "finished"
 
         conn.execute(
@@ -992,52 +924,34 @@ def settle_rps_game(game_id, winner_id):
             """,
             (status, winner_id, now, game_id),
         )
-
         return pot
 
 
 def create_odd_even_game(game_id, chat_id, user_id, choice, bet):
     if choice not in ("odd", "even"):
         raise ValueError("홀 또는 짝을 선택하세요.")
-
     user_id = int(user_id)
     bet = int(bet)
-
     with db() as conn:
         active = conn.execute(
-            """
-            SELECT 1
-            FROM odd_even_games
-            WHERE user_id = %s AND status = 'pending'
-            LIMIT 1
-            """,
+            "SELECT 1 FROM odd_even_games WHERE user_id = %s AND status = 'pending' LIMIT 1",
             (user_id,),
         ).fetchone()
-
         if active:
             raise ValueError("이미 처리 중인 홀짝 게임이 있습니다.")
-
         user = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not user:
             raise ValueError("등록되지 않은 회원입니다.")
-
         if int(user["game_points"]) < bet:
             raise ValueError(
                 f"게임포인트가 부족합니다. 보유: {int(user['game_points']):,}P"
             )
-
         now = now_iso()
-
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = game_points - %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = game_points - %s, updated_at = %s WHERE user_id = %s",
             (bet, now, user_id),
         )
         conn.execute(
@@ -1061,49 +975,32 @@ def create_odd_even_game(game_id, chat_id, user_id, choice, bet):
         )
 
 
-def settle_odd_even_game(
-    game_id,
-    dice_value,
-    payout_numerator,
-    payout_denominator,
-):
+def settle_odd_even_game(game_id, dice_value, payout_numerator, payout_denominator):
     dice_value = int(dice_value)
-
     if dice_value < 1 or dice_value > 6:
         raise ValueError("주사위 값이 올바르지 않습니다.")
-
     with db() as conn:
         game = conn.execute(
             "SELECT * FROM odd_even_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
         if not game:
             raise ValueError("홀짝 게임이 존재하지 않습니다.")
-
         if game["status"] != "pending":
             raise ValueError("이미 처리된 홀짝 게임입니다.")
-
         user_id = int(game["user_id"])
         bet = int(game["bet"])
         actual = "odd" if dice_value % 2 else "even"
         won = game["choice"] == actual
-
         payout = (
             bet * int(payout_numerator) // int(payout_denominator)
-            if won
-            else 0
+            if won else 0
         )
         net = payout - bet if won else -bet
         now = now_iso()
-
         if won:
             conn.execute(
-                """
-                UPDATE users
-                SET game_points = game_points + %s, updated_at = %s
-                WHERE user_id = %s
-                """,
+                "UPDATE users SET game_points = game_points + %s, updated_at = %s WHERE user_id = %s",
                 (payout, now, user_id),
             )
             conn.execute(
@@ -1118,7 +1015,6 @@ def settle_odd_even_game(
             status = "won"
         else:
             status = "lost"
-
         conn.execute(
             """
             INSERT INTO odd_even_stats (
@@ -1133,24 +1029,18 @@ def settle_odd_even_game(
             """,
             (user_id, 1 if won else 0, 0 if won else 1, net),
         )
-
         conn.execute(
             """
             UPDATE odd_even_games
-            SET dice_value = %s,
-                payout = %s,
-                status = %s,
-                updated_at = %s
+            SET dice_value = %s, payout = %s, status = %s, updated_at = %s
             WHERE game_id = %s
             """,
             (dice_value, payout, status, now, game_id),
         )
-
         balance = conn.execute(
             "SELECT game_points FROM users WHERE user_id = %s",
             (user_id,),
         ).fetchone()
-
         return {
             "won": won,
             "payout": payout,
@@ -1165,28 +1055,17 @@ def refund_odd_even_game(game_id):
             "SELECT * FROM odd_even_games WHERE game_id = %s FOR UPDATE",
             (game_id,),
         ).fetchone()
-
         if not game or game["status"] != "pending":
             return False
-
         user_id = int(game["user_id"])
         bet = int(game["bet"])
         now = now_iso()
-
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = game_points + %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = game_points + %s, updated_at = %s WHERE user_id = %s",
             (bet, now, user_id),
         )
         conn.execute(
-            """
-            UPDATE odd_even_games
-            SET status = 'refunded', updated_at = %s
-            WHERE game_id = %s
-            """,
+            "UPDATE odd_even_games SET status = 'refunded', updated_at = %s WHERE game_id = %s",
             (now, game_id),
         )
         conn.execute(
@@ -1198,23 +1077,16 @@ def refund_odd_even_game(game_id):
             """,
             (user_id, bet, game_id, now),
         )
-
         return True
 
 
 def get_odd_even_stats(user_id):
     user_id = int(user_id)
-
     with db() as conn:
         conn.execute(
-            """
-            INSERT INTO odd_even_stats (user_id)
-            VALUES (%s)
-            ON CONFLICT(user_id) DO NOTHING
-            """,
+            "INSERT INTO odd_even_stats (user_id) VALUES (%s) ON CONFLICT(user_id) DO NOTHING",
             (user_id,),
         )
-
         return conn.execute(
             "SELECT * FROM odd_even_stats WHERE user_id = %s",
             (user_id,),
@@ -1236,26 +1108,15 @@ def get_odd_even_ranking(limit=10):
         ).fetchall()
 
 
-def create_point_drop(
-    drop_id,
-    chat_id,
-    creator_id,
-    total_points,
-    max_claims,
-    message_id=None,
-):
+def create_point_drop(drop_id, chat_id, creator_id, total_points, max_claims, message_id=None):
     total_points = int(total_points)
     max_claims = int(max_claims)
-
     if total_points < 1 or max_claims < 1:
         raise ValueError("총 포인트와 인원은 1 이상이어야 합니다.")
-
     if total_points % max_claims != 0:
         raise ValueError("총 포인트가 인원수로 나누어떨어져야 합니다.")
-
     points_per_claim = total_points // max_claims
     now = now_iso()
-
     with db() as conn:
         conn.execute(
             """
@@ -1267,98 +1128,56 @@ def create_point_drop(
             VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'active', %s, %s)
             """,
             (
-                drop_id,
-                int(chat_id),
-                message_id,
-                int(creator_id),
-                total_points,
-                max_claims,
-                points_per_claim,
-                now,
-                now,
+                drop_id, int(chat_id), message_id, int(creator_id),
+                total_points, max_claims, points_per_claim, now, now,
             ),
         )
-
     return points_per_claim
 
 
 def set_point_drop_message_id(drop_id, message_id):
     with db() as conn:
         conn.execute(
-            """
-            UPDATE point_drops
-            SET message_id = %s, updated_at = %s
-            WHERE drop_id = %s
-            """,
+            "UPDATE point_drops SET message_id = %s, updated_at = %s WHERE drop_id = %s",
             (int(message_id), now_iso(), drop_id),
         )
 
 
 def claim_point_drop(drop_id, user_id):
     user_id = int(user_id)
-
     with db() as conn:
         drop = conn.execute(
-            """
-            SELECT *
-            FROM point_drops
-            WHERE drop_id = %s
-            FOR UPDATE
-            """,
+            "SELECT * FROM point_drops WHERE drop_id = %s FOR UPDATE",
             (drop_id,),
         ).fetchone()
-
         if not drop:
             raise ValueError("존재하지 않는 포인트 뿌리기입니다.")
-
         if drop["status"] != "active":
             raise ValueError("이미 종료된 포인트 뿌리기입니다.")
-
         if int(drop["creator_id"]) == user_id:
             raise ValueError("뿌리기를 만든 사람은 받을 수 없습니다.")
-
         already = conn.execute(
-            """
-            SELECT 1
-            FROM point_drop_claims
-            WHERE drop_id = %s AND user_id = %s
-            """,
+            "SELECT 1 FROM point_drop_claims WHERE drop_id = %s AND user_id = %s",
             (drop_id, user_id),
         ).fetchone()
-
         if already:
             raise ValueError("이미 포인트를 받았습니다.")
-
         claimed_count = int(drop["claimed_count"])
         max_claims = int(drop["max_claims"])
-
         if claimed_count >= max_claims:
             raise ValueError("선착순 지급이 종료되었습니다.")
-
         user = conn.execute(
-            """
-            SELECT game_points
-            FROM users
-            WHERE user_id = %s
-            FOR UPDATE
-            """,
+            "SELECT game_points FROM users WHERE user_id = %s FOR UPDATE",
             (user_id,),
         ).fetchone()
-
         if not user:
             raise ValueError("먼저 채팅을 한 번 입력한 뒤 다시 눌러주세요.")
-
         points = int(drop["points_per_claim"])
         new_count = claimed_count + 1
         new_status = "finished" if new_count >= max_claims else "active"
         now = now_iso()
-
         conn.execute(
-            """
-            UPDATE users
-            SET game_points = game_points + %s, updated_at = %s
-            WHERE user_id = %s
-            """,
+            "UPDATE users SET game_points = game_points + %s, updated_at = %s WHERE user_id = %s",
             (points, now, user_id),
         )
         conn.execute(
@@ -1377,13 +1196,7 @@ def claim_point_drop(drop_id, user_id):
             )
             VALUES (%s, %s, 'point_drop', %s, %s, %s)
             """,
-            (
-                user_id,
-                points,
-                int(drop["creator_id"]),
-                drop_id,
-                now,
-            ),
+            (user_id, points, int(drop["creator_id"]), drop_id, now),
         )
         conn.execute(
             """
@@ -1393,7 +1206,6 @@ def claim_point_drop(drop_id, user_id):
             """,
             (new_count, new_status, now, drop_id),
         )
-
         return {
             "points": points,
             "balance": int(user["game_points"]) + points,
@@ -1407,17 +1219,11 @@ def claim_point_drop(drop_id, user_id):
 
 def get_rps_stats(user_id):
     user_id = int(user_id)
-
     with db() as conn:
         conn.execute(
-            """
-            INSERT INTO rps_stats (user_id)
-            VALUES (%s)
-            ON CONFLICT(user_id) DO NOTHING
-            """,
+            "INSERT INTO rps_stats (user_id) VALUES (%s) ON CONFLICT(user_id) DO NOTHING",
             (user_id,),
         )
-
         return conn.execute(
             "SELECT * FROM rps_stats WHERE user_id = %s",
             (user_id,),
