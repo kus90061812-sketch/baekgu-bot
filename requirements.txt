@@ -1,2 +1,0 @@
-python-telegram-bot>=21.0,<22
-psycopg[binary]>=3.2,<4
