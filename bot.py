@@ -4,7 +4,8 @@ import re
 import logging
 import asyncio
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -774,17 +775,19 @@ async def korean_command_router(update: Update, context: ContextTypes.DEFAULT_TY
 async def post_init(application: Application):
     init_db()
 
-    application.job_queue.run_repeating(
-        hourly_job,
-        interval=SEND_INTERVAL_SECONDS,
-        first=SEND_INTERVAL_SECONDS,
-        name="hourly-relay",
-    )
+    # 한국시간 기준 매시 정각(00분) 자동 발송
+    seoul_tz = ZoneInfo("Asia/Seoul")
+    for hour in range(24):
+        application.job_queue.run_daily(
+            hourly_job,
+            time=time(hour=hour, minute=0, second=0, tzinfo=seoul_tz),
+            days=(0, 1, 2, 3, 4, 5, 6),
+            name=f"kst-hourly-relay-{hour:02d}",
+        )
 
     logger.info(
-        "봇 시작 | DB=%s interval=%ss",
+        "봇 시작 | DB=%s | schedule=KST 매시 정각",
         DB_KIND,
-        SEND_INTERVAL_SECONDS,
     )
 
 
